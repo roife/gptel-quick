@@ -31,7 +31,7 @@ Finally, if you have follow-up questions you can switch to a chat buffer and con
 
 https://github.com/karthink/gptel-quick/assets/8607532/9d17886b-4994-4e3f-93d6-fda79fc814ad
 
-If the [[https://github.com/tumashu/posframe][posframe]] package (optional) is not installed or cannot create a child frame, the response is messaged to the echo area instead.  On Emacs 31 or newer, posframe can use TTY child frames to show the popup in a terminal too.
+Posframe responses are rendered as unfolded Markdown with =markdown-ts-mode= when it is available.  If the [[https://github.com/tumashu/posframe][posframe]] package (optional) is not installed or cannot create a child frame, the response is messaged to the echo area instead.  On Emacs 31 or newer, posframe can use TTY child frames to show the popup in a terminal too.
 
 You can control the response word count (approximate) via =gptel-quick-word-count=, and the popup timeout via =gptel-quick-timeout=.
 

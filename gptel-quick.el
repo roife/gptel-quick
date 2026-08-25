@@ -97,6 +97,19 @@ This can include other regions, buffers or files added by
 `gptel-quick-backend''s models. Require `gptel-quick-backend' to
 be configured.")
 
+(defsubst gptel-quick--buffered-callback (callback)
+  "Adapt streaming responses for non-streaming CALLBACK."
+  (let (chunks)
+    (lambda (response info)
+      (cond
+       ((stringp response) (push response chunks))
+       ((eq response t)
+        (funcall callback (apply #'concat (nreverse chunks)) info))
+       (t
+        (when-let* ((error (plist-get info :error)))
+          (setf (plist-get info :status) error))
+        (funcall callback response info))))))
+
 ;;;###autoload
 (defun gptel-quick (query-text &optional count options)
   "Explain or summarize region or thing at point with an LLM.
@@ -148,19 +161,6 @@ OPTIONS is retained when requesting a longer response with `+'."
       :stream stream
       :callback callback)))
 
-(defsubst gptel-quick--buffered-callback (callback)
-  "Adapt streaming responses for non-streaming CALLBACK."
-  (let (chunks)
-    (lambda (response info)
-      (cond
-       ((stringp response) (push response chunks))
-       ((eq response t)
-        (funcall callback (apply #'concat (nreverse chunks)) info))
-       (t
-        (when-let* ((error (plist-get info :error)))
-          (setf (plist-get info :status) error))
-        (funcall callback response info))))))
-
 ;; From (info "(elisp) Accessing Mouse")
 (defun gptel-quick--frame-relative-coordinates (position)
   "Return frame-relative coordinates from POSITION.
@@ -174,6 +174,20 @@ POSITION is assumed to lie in a window text area."
 
 (declare-function posframe-show "posframe")
 (declare-function posframe-hide "posframe")
+(declare-function posframe-refresh "posframe")
+(declare-function posframe-workable-p "posframe")
+(declare-function posframe-poshandler-window-center "posframe")
+(declare-function markdown-ts-mode "markdown-ts-mode")
+(declare-function outline-show-all "outline")
+(defvar markdown-ts-default-folding)
+
+(defun gptel-quick--initialize-posframe ()
+  "Initialize the result buffer for unfolded Markdown rendering."
+  (if (require 'markdown-ts-mode nil t)
+      (let ((markdown-ts-default-folding 'show-all))
+        (markdown-ts-mode))
+    (text-mode))
+  (visual-line-mode 1))
 
 (defun gptel-quick--callback-posframe (response info)
   "Show RESPONSE appropriately, in a popup if possible.
@@ -185,7 +199,7 @@ quick actions on the popup."
     ((pred stringp)
      (pcase-let ((`(,query ,count ,pos ,options) (plist-get info :context)))
        (gptel-quick--update-posframe response pos)
-       (cl-flet ((clear-response () (interactive)
+       (cl-labels ((clear-response () (interactive)
                    (and (eq gptel-quick-display 'posframe)
                         (fboundp 'posframe-hide)
                         (posframe-hide " *gptel-quick*")))
@@ -234,7 +248,7 @@ quick actions on the popup."
                               :position coords
                               :border-width 2
                               :border-color (face-attribute 'vertical-border :foreground)
-                              :initialize #'visual-line-mode
+                              :initialize #'gptel-quick--initialize-posframe
                               :poshandler poshandler
                               :left-fringe 8
                               :right-fringe 8
@@ -245,6 +259,11 @@ quick actions on the popup."
                               :accept-focus t
                               :window-point 1)))
           (when (frame-live-p frame)
+            (with-current-buffer " *gptel-quick*"
+              (when (derived-mode-p 'markdown-ts-mode)
+                (outline-show-all)
+                (font-lock-ensure)))
+            (posframe-refresh " *gptel-quick*")
             (set-window-point (frame-selected-window frame) 1)
             (select-frame-set-input-focus frame))))
     (message response)))
