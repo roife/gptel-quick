@@ -34,9 +34,9 @@
 ;; summarizing/explaining prose or snippets of code, with minimal friction:
 ;;
 ;; When the popup is active, press "+" to get a longer summary, M-w (or
-;; `kill-ring-save') to copy the text, or C-g (`keyboard-quit') to clear it.  If
-;; you have follow-up questions you can press M-RET to switch to a chat buffer
-;; and continue the conversation.
+;; `kill-ring-save') to copy the text, or q/C-g (`keyboard-quit') to clear it.
+;; If you have follow-up questions you can press M-RET to switch to a chat
+;; buffer and continue the conversation.
 ;;
 ;; If the posframe package is not installed (optional), the response is messaged
 ;; to the echo area instead.
@@ -98,11 +98,18 @@ This can include other regions, buffers or files added by
 be configured.")
 
 ;;;###autoload
-(defun gptel-quick (query-text &optional count)
+(defun gptel-quick (query-text &optional count options)
   "Explain or summarize region or thing at point with an LLM.
 
 QUERY-TEXT is the text being explained.  COUNT is the approximate
-word count of the response."
+word count of the response.
+
+OPTIONS is a plist of per-request overrides.  The supported keys are:
+
+  :system      a system message accepted by `gptel-request'
+  :max-tokens  an integer token limit, or nil for no limit
+
+OPTIONS is retained when requesting a longer response with `+'."
   (interactive
    (list (cond
           ((use-region-p) (buffer-substring-no-properties (region-beginning)
@@ -117,16 +124,42 @@ word count of the response."
     (error "gptel-quick-backend and gptel-quick-model must be both set or unset"))
 
   (let* ((count (or count gptel-quick-word-count))
-         (gptel-max-tokens (floor (+ (sqrt (length query-text))
-                                     (* count 2.5))))
+         (gptel-max-tokens
+          (if (plist-member options :max-tokens)
+              (plist-get options :max-tokens)
+            (floor (+ (sqrt (length query-text))
+                      (* count 2.5)))))
          (gptel-use-context (and gptel-quick-use-context 'system))
          (gptel-backend (or gptel-quick-backend gptel-backend))
-         (gptel-model (or gptel-quick-model gptel-model)))
+         (gptel-model (or gptel-quick-model gptel-model))
+         (stream (and (fboundp 'gptel-openai-oauth-p)
+                      (gptel-openai-oauth-p gptel-backend)))
+         (callback (if stream
+                       (gptel-quick--buffered-callback
+                        #'gptel-quick--callback-posframe)
+                     #'gptel-quick--callback-posframe)))
     (gptel-request query-text
-      :system (funcall gptel-quick-system-message count)
+      :system (if (plist-member options :system)
+                  (plist-get options :system)
+                (funcall gptel-quick-system-message count))
       :context (list query-text count
-                     (posn-at-point (and (use-region-p) (region-beginning))))
-      :callback #'gptel-quick--callback-posframe)))
+                     (posn-at-point (and (use-region-p) (region-beginning)))
+                     options)
+      :stream stream
+      :callback callback)))
+
+(defsubst gptel-quick--buffered-callback (callback)
+  "Adapt streaming responses for non-streaming CALLBACK."
+  (let (chunks)
+    (lambda (response info)
+      (cond
+       ((stringp response) (push response chunks))
+       ((eq response t)
+        (funcall callback (apply #'concat (nreverse chunks)) info))
+       (t
+        (when-let* ((error (plist-get info :error)))
+          (setf (plist-get info :status) error))
+        (funcall callback response info))))))
 
 ;; From (info "(elisp) Accessing Mouse")
 (defun gptel-quick--frame-relative-coordinates (position)
@@ -150,16 +183,19 @@ quick actions on the popup."
   (pcase response
     ('nil (message "Response failed with error: %s" (plist-get info :status)))
     ((pred stringp)
-     (pcase-let ((`(,query ,count ,pos) (plist-get info :context)))
+     (pcase-let ((`(,query ,count ,pos ,options) (plist-get info :context)))
        (gptel-quick--update-posframe response pos)
        (cl-flet ((clear-response () (interactive)
                    (and (eq gptel-quick-display 'posframe)
                         (fboundp 'posframe-hide)
                         (posframe-hide " *gptel-quick*")))
+                 (quit-response () (interactive)
+                   (clear-response)
+                   (message nil))
                  (more-response  () (interactive)
                    (gptel-quick--update-posframe
                     "...generating longer summary..." pos)
-                   (gptel-quick query (* count 4)))
+                   (gptel-quick query (* count 4) options))
                  (copy-response  () (interactive) (kill-new response)
                    (message "Copied summary to kill-ring."))
                  (create-chat () (interactive)
@@ -167,40 +203,50 @@ quick actions on the popup."
                           (concat query "\n\n"
                                   (propertize response 'gptel 'response) "\n\n")
                           t)))
-         (set-transient-map
-          (let ((map (make-sparse-keymap)))
+         (let ((map (make-sparse-keymap)))
             (define-key map [remap keyboard-quit] #'clear-response)
+            (define-key map (kbd "q") #'quit-response)
             (define-key map (kbd "+") #'more-response)
             (define-key map [remap kill-ring-save] #'copy-response)
             (define-key map (kbd "M-RET") #'create-chat)
-            map)
-          nil #'clear-response nil gptel-quick-timeout))))
+           (set-transient-map
+            map
+            (lambda ()
+              (or (null this-command)
+                  (not (where-is-internal this-command (list map) t))))
+            #'clear-response nil gptel-quick-timeout)))))
     (`(tool-call . ,tool-calls)
      (gptel--display-tool-calls tool-calls info 'minibuffer))))
 
 (defun gptel-quick--update-posframe (response pos)
   "Show RESPONSE at in a posframe (at POS) or the echo area."
-  (if (and (display-graphic-p)          ;posframe is not terminal-compatible
-           (eq gptel-quick-display 'posframe)
-           (require 'posframe nil t))
+  (if (and (eq gptel-quick-display 'posframe)
+           (require 'posframe nil t)
+           (posframe-workable-p))
       (let ((fringe-indicator-alist nil)
             (coords) (poshandler))
         (if (and pos (not (equal (posn-x-y pos) '(0 . 0))))
             (setq coords (gptel-quick--frame-relative-coordinates pos))
           (setq poshandler #'posframe-poshandler-window-center))
-        (posframe-show " *gptel-quick*"
-                       :string response
-                       :position coords
-                       :border-width 2
-                       :border-color (face-attribute 'vertical-border :foreground)
-                       :initialize #'visual-line-mode
-                       :poshandler poshandler
-                       :left-fringe 8
-                       :right-fringe 8
-                       :min-width 36
-                       :max-width fill-column
-                       :min-height 1
-                       :timeout gptel-quick-timeout))
+        (let ((frame
+               (posframe-show " *gptel-quick*"
+                              :string response
+                              :position coords
+                              :border-width 2
+                              :border-color (face-attribute 'vertical-border :foreground)
+                              :initialize #'visual-line-mode
+                              :poshandler poshandler
+                              :left-fringe 8
+                              :right-fringe 8
+                              :min-width 36
+                              :max-width fill-column
+                              :min-height 1
+                              :timeout gptel-quick-timeout
+                              :accept-focus t
+                              :window-point 1)))
+          (when (frame-live-p frame)
+            (set-window-point (frame-selected-window frame) 1)
+            (select-frame-set-input-focus frame))))
     (message response)))
 
 (provide 'gptel-quick)

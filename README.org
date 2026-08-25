@@ -9,7 +9,7 @@ https://github.com/karthink/gptel-quick/assets/8607532/11c21577-56e0-44fc-a6f2-1
 When the popup is active,
 - press ~+~ to get a longer summary,
 - ~M-w~ (or =kill-ring-save=) to copy the response,
-- or ~C-g~ (or =keyboard-quit=) to clear it.
+- or ~q~/~C-g~ (or =keyboard-quit=) to clear it.
 
 (You probably want to bind it to a key instead of having to =M-x gptel-quick=, see Setup below for suggestions.)
 
@@ -31,7 +31,7 @@ Finally, if you have follow-up questions you can switch to a chat buffer and con
 
 https://github.com/karthink/gptel-quick/assets/8607532/9d17886b-4994-4e3f-93d6-fda79fc814ad
 
-If the [[https://github.com/tumashu/posframe][posframe]] package (optional) is not installed or Emacs is running inside a terminal, the response is messaged to the echo area instead.
+If the [[https://github.com/tumashu/posframe][posframe]] package (optional) is not installed or cannot create a child frame, the response is messaged to the echo area instead.  On Emacs 31 or newer, posframe can use TTY child frames to show the popup in a terminal too.
 
 You can control the response word count (approximate) via =gptel-quick-word-count=, and the popup timeout via =gptel-quick-timeout=.
 
@@ -47,6 +47,8 @@ Once installed, you can call =gptel-quick= at any time on a word/region.
 
 - =gptel-quick= will use the model specified in =gptel-model= by default.  If you want to specify a model explicitly and only for =gptel-quick=, set =gptel-quick-model=
 - =gptel-quick= will not work with "reasoning" models that generate a lot of text before their final answer.  Please use a non-reasoning model, or a model in a non-reasoning mode.
+
+Lisp callers can pass a third argument to =gptel-quick= to override request options for one lookup.  The plist accepts =:system= for a custom system message and =:max-tokens= for a token limit (or nil for no limit).  These options are preserved when ~+~ requests a longer response.
 
 It might be useful to add this command as an Embark action if you use Embark:
 
