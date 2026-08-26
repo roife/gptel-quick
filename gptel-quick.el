@@ -192,43 +192,49 @@ POSITION is assumed to lie in a window text area."
 (defun gptel-quick--callback-posframe (response info)
   "Show RESPONSE appropriately, in a popup if possible.
 
-Uses the buffer context from INFO.  Set up a transient map for
-quick actions on the popup."
+Uses the buffer context from INFO.  Set up a buffer-local map for
+quick actions when the popup has focus."
   (pcase response
     ('nil (message "Response failed with error: %s" (plist-get info :status)))
     ((pred stringp)
      (pcase-let ((`(,query ,count ,pos ,options) (plist-get info :context)))
-       (gptel-quick--update-posframe response pos)
-       (cl-labels ((clear-response () (interactive)
-                   (and (eq gptel-quick-display 'posframe)
-                        (fboundp 'posframe-hide)
-                        (posframe-hide " *gptel-quick*")))
-                 (quit-response () (interactive)
-                   (clear-response)
-                   (message nil))
-                 (more-response  () (interactive)
-                   (gptel-quick--update-posframe
-                    "...generating longer summary..." pos)
-                   (gptel-quick query (* count 4) options))
-                 (copy-response  () (interactive) (kill-new response)
-                   (message "Copied summary to kill-ring."))
-                 (create-chat () (interactive)
-                   (gptel (generate-new-buffer-name "*gptel-quick*") nil
-                          (concat query "\n\n"
-                                  (propertize response 'gptel 'response) "\n\n")
-                          t)))
-         (let ((map (make-sparse-keymap)))
-            (define-key map [remap keyboard-quit] #'clear-response)
-            (define-key map (kbd "q") #'quit-response)
-            (define-key map (kbd "+") #'more-response)
-            (define-key map [remap kill-ring-save] #'copy-response)
-            (define-key map (kbd "M-RET") #'create-chat)
-           (set-transient-map
-            map
-            (lambda ()
-              (or (null this-command)
-                  (not (where-is-internal this-command (list map) t))))
-            #'clear-response nil gptel-quick-timeout)))))
+       (let ((display-frame (gptel-quick--update-posframe response pos)))
+         (cl-labels ((clear-response ()
+                       (interactive)
+                       (when-let ((buffer (get-buffer " *gptel-quick*")))
+                         (with-current-buffer buffer
+                           (kill-local-variable 'overriding-local-map)))
+                       (and (eq gptel-quick-display 'posframe)
+                            (fboundp 'posframe-hide)
+                            (posframe-hide " *gptel-quick*")))
+                     (quit-response ()
+                       (interactive)
+                       (clear-response)
+                       (message nil))
+                     (more-response ()
+                       (interactive)
+                       (gptel-quick--update-posframe
+                        "...generating longer summary..." pos)
+                       (gptel-quick query (* count 4) options))
+                     (copy-response ()
+                       (interactive)
+                       (kill-new response)
+                       (message "Copied summary to kill-ring."))
+                     (create-chat ()
+                       (interactive)
+                       (gptel (generate-new-buffer-name "*gptel-quick*") nil
+                              (concat query "\n\n"
+                                      (propertize response 'gptel 'response) "\n\n")
+                              t)))
+           (when (and (framep display-frame) (frame-live-p display-frame))
+             (let ((map (make-sparse-keymap)))
+               (define-key map [remap keyboard-quit] #'clear-response)
+               (define-key map (kbd "q") #'quit-response)
+               (define-key map (kbd "+") #'more-response)
+               (define-key map [remap kill-ring-save] #'copy-response)
+               (define-key map (kbd "M-RET") #'create-chat)
+               (with-current-buffer " *gptel-quick*"
+                 (setq-local overriding-local-map map))))))))
     (`(tool-call . ,tool-calls)
      (gptel--display-tool-calls tool-calls info 'minibuffer))))
 
@@ -265,7 +271,8 @@ quick actions on the popup."
                 (font-lock-ensure)))
             (posframe-refresh " *gptel-quick*")
             (set-window-point (frame-selected-window frame) 1)
-            (select-frame-set-input-focus frame))))
+            (select-frame-set-input-focus frame)
+            frame)))
     (message response)))
 
 (provide 'gptel-quick)
